@@ -262,6 +262,7 @@ LaserMapping::LaserMapping() {
 }
 
 void LaserMapping::Run() {
+//    获得一帧雷达和帧间IMU
     if (!SyncPackages()) {
         return;
     }
@@ -280,6 +281,7 @@ void LaserMapping::Run() {
         flg_first_scan_ = false;
         return;
     }
+//    至少累积INIT_TIME的雷达帧
     flg_EKF_inited_ = (measures_.lidar_bag_time_ - first_lidar_time_) >= options::INIT_TIME;
 
     /// downsample
@@ -307,6 +309,7 @@ void LaserMapping::Run() {
             // iterated state estimation
             double solve_H_time = 0;
             // update the observation model, will call nn and point-to-plane residual computation
+//            在初始时刻已经定义了 ObsModel
             kf_.update_iterated_dyn_share_modified(options::LASER_POINT_COV, solve_H_time);
             // save the state
             state_point_ = kf_.get_x();
@@ -440,6 +443,7 @@ bool LaserMapping::SyncPackages() {
         if (measures_.lidar_->points.size() <= 1) {
             LOG(WARNING) << "Too few input point cloud!";
             lidar_end_time_ = measures_.lidar_bag_time_ + lidar_mean_scantime_;
+//            如果当前帧雷达的扫描时间小于平均扫描时间的一半
         } else if (measures_.lidar_->points.back().curvature / double(1000) < 0.5 * lidar_mean_scantime_) {
             lidar_end_time_ = measures_.lidar_bag_time_ + lidar_mean_scantime_;
         } else {
@@ -452,7 +456,7 @@ bool LaserMapping::SyncPackages() {
         measures_.lidar_end_time_ = lidar_end_time_;
         lidar_pushed_ = true;
     }
-
+//  最新的imu的时间戳要位于雷达之后
     if (last_timestamp_imu_ < lidar_end_time_) {
         return false;
     }
@@ -547,7 +551,7 @@ void LaserMapping::MapIncremental() {
  */
 void LaserMapping::ObsModel(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_data) {
     int cnt_pts = scan_down_body_->size();
-
+    // 配置索引值，用于并行搜索
     std::vector<size_t> index(cnt_pts);
     for (size_t i = 0; i < index.size(); ++i) {
         index[i] = i;
@@ -555,35 +559,40 @@ void LaserMapping::ObsModel(state_ikfom &s, esekfom::dyn_share_datastruct<double
 
     Timer::Evaluate(
         [&, this]() {
+            // lidar在世界坐标系下的位姿, body->world
             auto R_wl = (s.rot * s.offset_R_L_I).cast<float>();
             auto t_wl = (s.rot * s.offset_T_L_I + s.pos).cast<float>();
 
             /** closest surface search and residual computation **/
+//            for_each配合par_unseq可以实现C++17的for并行化
             std::for_each(std::execution::par_unseq, index.begin(), index.end(), [&](const size_t &i) {
                 PointType &point_body = scan_down_body_->points[i];
-                PointType &point_world = scan_down_world_->points[i];
+                PointType &point_world = scan_down_world_->points[i];// 目前还是个空值
 
                 /* transform to world frame */
                 common::V3F p_body = point_body.getVector3fMap();
                 point_world.getVector3fMap() = R_wl * p_body + t_wl;
                 point_world.intensity = point_body.intensity;
 
+//                搜索最近点，并构建平面模型
                 auto &points_near = nearest_points_[i];
+                // 如果迭代没有发散的话就继续找对应特征
                 if (ekfom_data.converge) {
                     /** Find the closest surfaces in the map **/
                     ivox_->GetClosestPoint(point_world, points_near, options::NUM_MATCH_POINTS);
+                    // 判断近邻点是否足够，否则不进行平面拟合
                     point_selected_surf_[i] = points_near.size() >= options::MIN_NUM_MATCH_POINTS;
                     if (point_selected_surf_[i]) {
                         point_selected_surf_[i] =
                             common::esti_plane(plane_coef_[i], points_near, options::ESTI_PLANE_THRESHOLD);
                     }
                 }
-
+                // 如果近邻点可以形成平面，则计算point-plane距离残差
                 if (point_selected_surf_[i]) {
                     auto temp = point_world.getVector4fMap();
                     temp[3] = 1.0;
                     float pd2 = plane_coef_[i].dot(temp);
-
+                    // 判断求得的点到平面距离是否合理
                     bool valid_corr = p_body.norm() > 81 * pd2 * pd2;
                     if (valid_corr) {
                         point_selected_surf_[i] = true;
@@ -595,7 +604,7 @@ void LaserMapping::ObsModel(state_ikfom &s, esekfom::dyn_share_datastruct<double
         "    ObsModel (Lidar Match)");
 
     effect_feat_num_ = 0;
-
+// 存储对应的残差和平面法向量
     corr_pts_.resize(cnt_pts);
     corr_norm_.resize(cnt_pts);
     for (int i = 0; i < cnt_pts; i++) {
@@ -619,17 +628,23 @@ void LaserMapping::ObsModel(state_ikfom &s, esekfom::dyn_share_datastruct<double
     Timer::Evaluate(
         [&, this]() {
             /*** Computation of Measurement Jacobian matrix H and measurements vector ***/
+            // 初始化H矩阵
             ekfom_data.h_x = Eigen::MatrixXd::Zero(effect_feat_num_, 12);  // 23
+            // 残差值向量
             ekfom_data.h.resize(effect_feat_num_);
 
             index.resize(effect_feat_num_);
+//            lidar to imu外参
             const common::M3F off_R = s.offset_R_L_I.toRotationMatrix().cast<float>();
             const common::V3F off_t = s.offset_T_L_I.cast<float>();
             const common::M3F Rt = s.rot.toRotationMatrix().transpose().cast<float>();
 
             std::for_each(std::execution::par_unseq, index.begin(), index.end(), [&](const size_t &i) {
+                // 原始点坐标(body frame)
                 common::V3F point_this_be = corr_pts_[i].head<3>();
+                // vector转成反对称矩阵，显然后面的求导是使用右扰动模型
                 common::M3F point_be_crossmat = SKEW_SYM_MATRIX(point_this_be);
+                // 点云转到imu坐标系下
                 common::V3F point_this = off_R * point_this_be + off_t;
                 common::M3F point_crossmat = SKEW_SYM_MATRIX(point_this);
 
@@ -640,16 +655,19 @@ void LaserMapping::ObsModel(state_ikfom &s, esekfom::dyn_share_datastruct<double
                 common::V3F C(Rt * norm_vec);
                 common::V3F A(point_crossmat * C);
 
+                // 是否需要估计外参，一般为false
                 if (extrinsic_est_en_) {
                     common::V3F B(point_be_crossmat * off_R.transpose() * C);
                     ekfom_data.h_x.block<1, 12>(i, 0) << norm_vec[0], norm_vec[1], norm_vec[2], A[0], A[1], A[2], B[0],
                         B[1], B[2], C[0], C[1], C[2];
                 } else {
+                    // 只优化位置position和旋转rotation
                     ekfom_data.h_x.block<1, 12>(i, 0) << norm_vec[0], norm_vec[1], norm_vec[2], A[0], A[1], A[2], 0.0,
                         0.0, 0.0, 0.0, 0.0, 0.0;
                 }
 
                 /*** Measurement: distance to the closest surface/corner ***/
+                // 存储点面距离，即残差值
                 ekfom_data.h(i) = -corr_pts_[i][3];
             });
         },

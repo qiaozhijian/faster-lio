@@ -63,6 +63,7 @@ class IVox {
      */
     explicit IVox(Options options) : options_(options) {
         options_.inv_resolution_ = 1.0 / options_.resolution_;
+//        生成最近邻需要查询的点
         GenerateNearbyGrids();
     }
 
@@ -98,8 +99,12 @@ class IVox {
     KeyType Pos2Grid(const PtType& pt) const;
 
     Options options_;
+//  重载了()运算符的结构体hash_vec作为哈希函数
+//  哈希索引表（保存key（Eigen::Matrix<int, 3,1>）到哈希索引，再到节点的指针的映射关系），hash_vec是重载哈希函数
+//  两个keyType在数值上是相同的
     std::unordered_map<KeyType, typename std::list<std::pair<KeyType, NodeType>>::iterator, hash_vec<dim>>
         grids_map_;                                        // voxel hash map
+//  一个链表（std::list），是保存所有体素实体的地方，grids_map_中保存的value只是一个指向这里的指针，这里才是真正的数据。
     std::list<std::pair<KeyType, NodeType>> grids_cache_;  // voxel cache
     std::vector<KeyType> nearby_grids_;                    // nearbys
 };
@@ -134,7 +139,7 @@ bool IVox<dim, node_type, PointType>::GetClosestPoint(const PointType& pt, Point
                                                       double max_range) {
     std::vector<DistPoint> candidates;
     candidates.reserve(max_num * nearby_grids_.size());
-
+//    计算所属体素的key
     auto key = Pos2Grid(ToEigen<float, dim>(pt));
 
 // #define INNER_TIMER
@@ -145,7 +150,7 @@ bool IVox<dim, node_type, PointType>::GetClosestPoint(const PointType& pt, Point
         stats["nth"] = std::vector<int64_t>();
     }
 #endif
-
+//    找到所有的邻居体素，并获得每个体素内的近邻点。
     for (const KeyType& delta : nearby_grids_) {
         auto dkey = key + delta;
         auto iter = grids_map_.find(dkey);
@@ -175,6 +180,7 @@ bool IVox<dim, node_type, PointType>::GetClosestPoint(const PointType& pt, Point
         std::nth_element(candidates.begin(), candidates.begin() + max_num - 1, candidates.end());
         candidates.resize(max_num);
     }
+//    对所有候选近邻排序，得到最终的max_num个
     std::nth_element(candidates.begin(), candidates.begin(), candidates.end());
 
 #ifdef INNER_TIMER
@@ -256,24 +262,30 @@ bool IVox<dim, node_type, PointType>::GetClosestPoint(const PointVector& cloud, 
 template <int dim, IVoxNodeType node_type, typename PointType>
 void IVox<dim, node_type, PointType>::AddPoints(const PointVector& points_to_add) {
     std::for_each(std::execution::unseq, points_to_add.begin(), points_to_add.end(), [this](const auto& pt) {
+        // 计算其所属体素的三维索引作为 key
         auto key = Pos2Grid(ToEigen<float, dim>(pt));
 
+//        查找此 key 是否已经存在
         auto iter = grids_map_.find(key);
         if (iter == grids_map_.end()) {
             PointType center;
+//            获得体素的中心
             center.getVector3fMap() = key.template cast<float>() * options_.resolution_;
-
+            //在新建体素时首先在 grids_cache_ 中新增一个体素
             grids_cache_.push_front({key, NodeType(center, options_.resolution_)});
+//            把这个体素的 key 和迭代器指针注册到 grids_map_ 中
             grids_map_.insert({key, grids_cache_.begin()});
-
             grids_cache_.front().second.InsertPoint(pt);
 
+//          检查维护的体素数量是否超过最大值，若超过，则删除最旧的一个。
             if (grids_map_.size() >= options_.capacity_) {
                 grids_map_.erase(grids_cache_.back().first);
                 grids_cache_.pop_back();
             }
         } else {
+//            若存在，则向对应体素里新增点
             iter->second->second.InsertPoint(pt);
+//            把新改变的这个节点放到grids_cache_的开头（更晚被删除）
             grids_cache_.splice(grids_cache_.begin(), grids_cache_, iter->second);
             grids_map_[key] = grids_cache_.begin();
         }

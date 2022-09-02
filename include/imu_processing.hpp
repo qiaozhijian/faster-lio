@@ -196,28 +196,29 @@ void ImuProcess::UndistortPcl(const common::MeasureGroup &meas, esekfom::esekf<s
         if (tail->header.stamp.toSec() < last_lidar_end_time_) {
             continue;
         }
-
+//        计算平均角速度和加速度
         angvel_avr << 0.5 * (head->angular_velocity.x + tail->angular_velocity.x),
             0.5 * (head->angular_velocity.y + tail->angular_velocity.y),
             0.5 * (head->angular_velocity.z + tail->angular_velocity.z);
         acc_avr << 0.5 * (head->linear_acceleration.x + tail->linear_acceleration.x),
             0.5 * (head->linear_acceleration.y + tail->linear_acceleration.y),
             0.5 * (head->linear_acceleration.z + tail->linear_acceleration.z);
-
+//
         acc_avr = acc_avr * common::G_m_s2 / mean_acc_.norm();  // - state_inout.ba;
-
+//      积分时间t
         if (head->header.stamp.toSec() < last_lidar_end_time_) {
             dt = tail->header.stamp.toSec() - last_lidar_end_time_;
         } else {
             dt = tail->header.stamp.toSec() - head->header.stamp.toSec();
         }
-
+//        状态传播方程的Q矩阵
         in.acc = acc_avr;
         in.gyro = angvel_avr;
         Q_.block<3, 3>(0, 0).diagonal() = cov_gyr_;
         Q_.block<3, 3>(3, 3).diagonal() = cov_acc_;
         Q_.block<3, 3>(6, 6).diagonal() = cov_bias_gyr_;
         Q_.block<3, 3>(9, 9).diagonal() = cov_bias_acc_;
+//        进行状态传播
         kf_state.predict(dt, Q_, in);
 
         /* save the poses at each IMU measurements */
@@ -227,7 +228,7 @@ void ImuProcess::UndistortPcl(const common::MeasureGroup &meas, esekfom::esekf<s
         for (int i = 0; i < 3; i++) {
             acc_s_last_[i] += imu_state.grav[i];
         }
-
+//      保存IMU位姿用于去畸变
         double &&offs_t = tail->header.stamp.toSec() - pcl_beg_time;
         IMUpose_.emplace_back(common::set_pose6d(offs_t, acc_s_last_, angvel_last_, imu_state.vel, imu_state.pos,
                                                  imu_state.rot.toRotationMatrix()));
@@ -246,6 +247,7 @@ void ImuProcess::UndistortPcl(const common::MeasureGroup &meas, esekfom::esekf<s
     if (pcl_out.points.empty()) {
         return;
     }
+//    去畸变
     auto it_pcl = pcl_out.points.end() - 1;
     for (auto it_kp = IMUpose_.end() - 1; it_kp != IMUpose_.begin(); it_kp--) {
         auto head = it_kp - 1;
@@ -292,6 +294,7 @@ void ImuProcess::Process(const common::MeasureGroup &meas, esekfom::esekf<state_
 
     ROS_ASSERT(meas.lidar_ != nullptr);
 
+//    计算IMU的方差，重力方向
     if (imu_need_init_) {
         /// The very first lidar frame
         IMUInit(meas, kf_state, init_iter_num_);

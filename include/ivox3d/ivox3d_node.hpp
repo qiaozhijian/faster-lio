@@ -101,6 +101,7 @@ class IVoxNodePhc {
     Eigen::Matrix<float, dim, 1> min_cube_;
 };
 
+//这里定义的不是IVoxNode，而是DistPoint这个struct
 template <typename PointT, int dim>
 struct IVoxNode<PointT, dim>::DistPoint {
     double dist = 0;
@@ -140,6 +141,7 @@ PointT IVoxNode<PointT, dim>::GetPoint(const std::size_t idx) const {
 template <typename PointT, int dim>
 int IVoxNode<PointT, dim>::KNNPointByCondition(std::vector<DistPoint>& dis_points, const PointT& point, const int& K,
                                                const double& max_range) {
+//    其他体素找到的候选点+
     std::size_t old_size = dis_points.size();
 // #define INNER_TIMER
 #ifdef INNER_TIMER
@@ -150,15 +152,17 @@ int IVoxNode<PointT, dim>::KNNPointByCondition(std::vector<DistPoint>& dis_point
         stats["nth"] = std::vector<int64_t>();
     }
 #endif
-
+//  遍历体素内的所有点
     for (const auto& pt : points_) {
 #ifdef INNER_TIMER
         auto t0 = std::chrono::high_resolution_clock::now();
 #endif
+//      计算遍历点和当前点的距离^2
         double d = distance2(pt, point);
 #ifdef INNER_TIMER
         auto t1 = std::chrono::high_resolution_clock::now();
 #endif
+        // 如果距离低于最大距离阈值，则将其放入候选近邻点队列中
         if (d < max_range * max_range) {
             dis_points.template emplace_back(DistPoint(d, this, &pt - points_.data()));
         }
@@ -177,7 +181,9 @@ int IVoxNode<PointT, dim>::KNNPointByCondition(std::vector<DistPoint>& dis_point
 #endif
     // sort by distance
     if (old_size + K >= dis_points.size()) {
+//        如果没找够K个，则不排序
     } else {
+        // 从old_size开始（之前可能在其他体素也找到过候选点），取前K个最近点
         std::nth_element(dis_points.begin() + old_size, dis_points.begin() + old_size + K - 1, dis_points.end());
         dis_points.resize(old_size + K);
     }
