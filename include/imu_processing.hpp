@@ -292,6 +292,9 @@ void ImuProcess::Process(const common::MeasureGroup &meas, esekfom::esekf<state_
         return;
     }
 
+//    LOG(INFO) << "imu acc: " << meas.imu_.back()->linear_acceleration.x << " "
+//              << meas.imu_.back()->linear_acceleration.y << " "
+//              << meas.imu_.back()->linear_acceleration.z;
     ROS_ASSERT(meas.lidar_ != nullptr);
 
 //    计算IMU的方差，重力方向

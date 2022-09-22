@@ -315,6 +315,9 @@ void LaserMapping::Run() {
             state_point_ = kf_.get_x();
             euler_cur_ = SO3ToEuler(state_point_.rot);
             pos_lidar_ = state_point_.pos + state_point_.rot * state_point_.offset_T_L_I;
+//            common::V3D bg = state_point_.bg;
+//            common::V3D ba = state_point_.ba;
+//            LOG(INFO) << "bg: " << bg.transpose() << ", ba: " << ba.transpose();
         },
         "IEKF Solve and Update");
 
